@@ -127,12 +127,22 @@ class Game2048:
         """
         available = []
         for action in ACTIONS:
-            # Simulate the move on a copy of the board
-            board_copy = self._copy_board(self.board)
-            moved, _ = self._move_board(board_copy, action)
+            moved, _, _ = self.simulate_action(action)
             if moved:
                 available.append(action)
         return available
+
+    def simulate_action(self, action: str) -> Tuple[bool, int, Board]:
+        """
+        Simulate an action on a copy of the current board without mutating the
+        environment.
+
+        :param action: one of ACTIONS
+        :return: (moved, reward, next_board_copy)
+        """
+        board_copy = self._copy_board(self.board)
+        moved, reward = self._move_board(board_copy, action)
+        return moved, reward, board_copy
 
     def get_state(self) -> Board:
         """

@@ -1,11 +1,9 @@
 # src/agents/random_agent.py
 
 import random
+from src.game_2048 import ACTIONS
 
 class RandomAgent:
-    """
-    The simplest agent. Chooses a random legal move.
-    """
     def select_action(self, env):
         actions = env.get_available_actions()
         if not actions:
