@@ -1,5 +1,3 @@
-# play.py
-
 import argparse
 import sys
 import time
@@ -7,16 +5,17 @@ import statistics
 from collections import Counter
 
 from src.game_2048 import Game2048
-from src.gui_2048 import Game2048GUI
+try:
+    from src.gui_2048 import Game2048GUI
+except Exception:
+    Game2048GUI = None
 
 from src.agents.random_agent import RandomAgent
 from src.agents.greedy_agent import GreedyAgent
 from src.agents.expectimax_agent import ExpectimaxAgent
 
-
-# ----------------------------------------------------
-# Load agent by name
-# ----------------------------------------------------
+#python3 play.py eval-expectimax --games 5 --depth 4 --time-limit 0.12
+#python3 play.py expectimax --gui --depth 4 --time-limit 0.12
 def load_agent(name, depth=4, time_limit=0.08, debug=False):
     if name == "random":
         return RandomAgent()
@@ -33,6 +32,8 @@ def load_agent(name, depth=4, time_limit=0.08, debug=False):
 # ----------------------------------------------------
 def play_human(gui=False):
     if gui:
+        if Game2048GUI is None:
+            raise RuntimeError("GUI dependencies (pygame) are missing; install them to use --gui.")
         Game2048GUI(agent=None).run()
         return
 
@@ -58,6 +59,8 @@ def play_agent(agent_name, gui=False, depth=4, time_limit=0.08, seed=None, debug
     agent = load_agent(agent_name, depth=depth, time_limit=time_limit, debug=debug)
 
     if gui:
+        if Game2048GUI is None:
+            raise RuntimeError("GUI dependencies (pygame) are missing; install them to use --gui.")
         Game2048GUI(agent=agent).run()
         return
 
@@ -74,7 +77,7 @@ def play_agent(agent_name, gui=False, depth=4, time_limit=0.08, seed=None, debug
 # ----------------------------------------------------
 # Agent batch evaluation mode (10 games)
 # ----------------------------------------------------
-def eval_agent(agent_name, games=10, depth=4, time_limit=0.08, seed=None, debug=False):
+def eval_agent(agent_name, games=10, depth=4, time_limit=0.08, seed=None, debug=False, report_end=False):
     agent = load_agent(agent_name, depth=depth, time_limit=time_limit, debug=debug)
 
     scores = []
@@ -102,6 +105,18 @@ def eval_agent(agent_name, games=10, depth=4, time_limit=0.08, seed=None, debug=
             wins += 1
 
         print(f"Game {i+1}: Score = {env.score}, Max tile = {max_tiles[-1]}")
+        if report_end:
+            print("Final board:")
+            for row in env.board:
+                print(" ".join(f"{v:4d}" if v != 0 else "   ." for v in row))
+            empty = sum(cell == 0 for row in env.board for cell in row)
+            corners = [
+                env.board[0][0],
+                env.board[0][env.size - 1],
+                env.board[env.size - 1][0],
+                env.board[env.size - 1][env.size - 1],
+            ]
+            print(f"Empty cells: {empty} | Corners: {corners}\n")
 
     max_tile_counts = Counter(max_tiles)
     avg_score = sum(scores) / games
@@ -145,6 +160,8 @@ if __name__ == "__main__":
                         help="Base seed for deterministic evals (increments per game)")
     parser.add_argument("--debug", action="store_true",
                         help="Enable verbose debug prints (expectimax decisions and per-move time)")
+    parser.add_argument("--report-end", action="store_true",
+                        help="Print final board and corner/empty stats for each eval game")
 
     args = parser.parse_args()
 
@@ -152,7 +169,8 @@ if __name__ == "__main__":
     if args.mode.startswith("eval-"):
         agent_name = args.mode.split("eval-")[1]
         eval_agent(agent_name, games=args.games, depth=args.depth,
-                   time_limit=args.time_limit, seed=args.seed, debug=args.debug)
+                   time_limit=args.time_limit, seed=args.seed, debug=args.debug,
+                   report_end=args.report_end)
         sys.exit()
 
     # Human mode

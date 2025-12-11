@@ -2,6 +2,7 @@
 
 import math
 import time
+import random
 from src.game_2048 import ACTIONS
 
 
@@ -24,14 +25,29 @@ class ExpectimaxAgent:
         best_score = -float("inf")
         best_action = None
 
-        for action in ACTIONS:
-            moved, reward, board_copy = env.simulate_action(action)
-            if not moved:
-                continue
-            score = reward + self.expectimax(board_copy, self.depth - 1, is_chance=True)
-            if score > best_score:
-                best_score = score
-                best_action = action
+        # Iterative deepening: keep the best fully evaluated result before the deadline.
+        for depth_limit in range(1, self.depth + 1):
+            depth_best_score = best_score
+            depth_best_action = best_action
+
+            for action in ACTIONS:
+                moved, reward, board_copy = env.simulate_action(action)
+                if not moved:
+                    continue
+                score = reward + self.expectimax(board_copy, depth_limit - 1, is_chance=True)
+                if score > depth_best_score:
+                    depth_best_score = score
+                    depth_best_action = action
+
+                if self._deadline and time.time() >= self._deadline:
+                    break
+
+            if depth_best_score > best_score:
+                best_score = depth_best_score
+                best_action = depth_best_action
+
+            if self._deadline and time.time() >= self._deadline:
+                break
 
         return best_action
 
@@ -61,6 +77,8 @@ class ExpectimaxAgent:
         max_score = -float("inf")
 
         for action in ACTIONS:
+            if not self.can_move(board, action):
+                continue
             board_copy = self.copy_board(board)
             moved, reward = self.move_board(board_copy, action)
 
@@ -79,17 +97,15 @@ class ExpectimaxAgent:
         if not empty:
             return self.evaluate(board)
 
-        total = 0
+        total = 0.0
         for (r, c) in empty:
-            # spawn 2
-            b2 = self.copy_board(board)
-            b2[r][c] = 2
-            total += 0.9 * self.expectimax(b2, depth - 1, is_chance=False)
+            board[r][c] = 2
+            total += 0.9 * self.expectimax(board, depth - 1, is_chance=False)
 
-            # spawn 4
-            b4 = self.copy_board(board)
-            b4[r][c] = 4
-            total += 0.1 * self.expectimax(b4, depth - 1, is_chance=False)
+            board[r][c] = 4
+            total += 0.1 * self.expectimax(board, depth - 1, is_chance=False)
+
+            board[r][c] = 0
 
         return total / len(empty)
 
@@ -97,7 +113,8 @@ class ExpectimaxAgent:
     # UTILITIES
     # ---------------------------------------------------------
     def board_key(self, board):
-        return tuple(tuple(row) for row in board)
+        # Flattened tuple is smaller/faster to hash than tuple of tuples.
+        return tuple(cell for row in board for cell in row)
 
     def copy_board(self, board):
         return [row[:] for row in board]
@@ -172,59 +189,104 @@ class ExpectimaxAgent:
 
         return True
 
+    def can_move(self, board, action):
+        size = len(board)
+        if action == "left":
+            for r in range(size):
+                row = board[r]
+                for c in range(1, size):
+                    if row[c] and (row[c - 1] == 0 or row[c - 1] == row[c]):
+                        return True
+        elif action == "right":
+            for r in range(size):
+                row = board[r]
+                for c in range(size - 2, -1, -1):
+                    if row[c] and (row[c + 1] == 0 or row[c + 1] == row[c]):
+                        return True
+        elif action == "up":
+            for c in range(size):
+                for r in range(1, size):
+                    val = board[r][c]
+                    if val and (board[r - 1][c] == 0 or board[r - 1][c] == val):
+                        return True
+        elif action == "down":
+            for c in range(size):
+                for r in range(size - 2, -1, -1):
+                    val = board[r][c]
+                    if val and (board[r + 1][c] == 0 or board[r + 1][c] == val):
+                        return True
+        return False
+
     # ---------------------------------------------------------
     # EVALUATION — STRONG HEURISTICS
     # ---------------------------------------------------------
     def evaluate(self, board):
+        log_board = self.log_board(board)
+        smooth_penalty = self.smoothness(log_board)
+        monotonic_score = self.monotonicity(log_board)
+        empty_bonus = self.empty_cells(board)
+        corner_bonus = self.corner_max(board, log_board)
+        gradient_bonus = self.weighted_grid(log_board)
+
         return (
-            self.smoothness(board) * -0.1 +
-            self.monotonicity(board) * 1.0 +
-            self.empty_cells(board) * 2.7 +
-            self.corner_max(board) * 1.0 +
-            self.weighted_grid(board) * 1.0
+            3.0 * empty_bonus
+            + 1.4 * corner_bonus
+            + 0.65 * gradient_bonus
+            + 1.5 * monotonic_score
+            - 0.25 * smooth_penalty
         )
+
+    def log_board(self, board):
+        return [[0 if v == 0 else int(math.log2(v)) for v in row] for row in board]
 
     def empty_cells(self, board):
         size = len(board)
         return sum(board[r][c] == 0 for r in range(size) for c in range(size))
 
-    def smoothness(self, board):
-        size = len(board)
-        score = 0
+    def smoothness(self, log_board):
+        size = len(log_board)
+        score = 0.0
         for r in range(size):
             for c in range(size):
-                if board[r][c] != 0:
-                    value = math.log(board[r][c], 2)
-                    for dr, dc in [(1,0),(0,1)]:
+                if log_board[r][c] != 0:
+                    value = log_board[r][c]
+                    for dr, dc in ((1, 0), (0, 1)):
                         nr, nc = r + dr, c + dc
-                        if 0 <= nr < size and 0 <= nc < size and board[nr][nc] != 0:
-                            score += abs(value - math.log(board[nr][nc], 2))
+                        if 0 <= nr < size and 0 <= nc < size and log_board[nr][nc] != 0:
+                            score += abs(value - log_board[nr][nc])
         return score
 
-    def monotonicity(self, board):
-        size = len(board)
-        totals = [0, 0, 0, 0]
+    def monotonicity(self, log_board):
+        size = len(log_board)
+        totals = [0.0, 0.0, 0.0, 0.0]
 
         # rows
         for r in range(size):
             for c in range(size - 1):
-                if board[r][c] and board[r][c+1]:
-                    x, y = math.log(board[r][c], 2), math.log(board[r][c+1], 2)
-                    if x > y: totals[0] += x - y
-                    else: totals[1] += y - x
+                if log_board[r][c] and log_board[r][c + 1]:
+                    x, y = log_board[r][c], log_board[r][c + 1]
+                    if x > y:
+                        totals[0] -= x - y
+                    else:
+                        totals[1] -= y - x
 
         # columns
         for c in range(size):
             for r in range(size - 1):
-                if board[r][c] and board[r+1][c]:
-                    x, y = math.log(board[r][c], 2), math.log(board[r+1][c], 2)
-                    if x > y: totals[2] += x - y
-                    else: totals[3] += y - x
+                if log_board[r][c] and log_board[r + 1][c]:
+                    x, y = log_board[r][c], log_board[r + 1][c]
+                    if x > y:
+                        totals[2] -= x - y
+                    else:
+                        totals[3] -= y - x
 
         return max(totals[0], totals[1]) + max(totals[2], totals[3])
 
-    def corner_max(self, board):
+    def corner_max(self, board, log_board):
         max_tile = max(max(row) for row in board)
+        if max_tile == 0:
+            return 0
+        max_log = int(math.log2(max_tile))
         size = len(board)
         corners = [
             board[0][0],
@@ -232,34 +294,26 @@ class ExpectimaxAgent:
             board[size - 1][0],
             board[size - 1][size - 1],
         ]
-        return max_tile * (2 if max_tile in corners else 0.5)
+        return max_log * (2.0 if max_tile in corners else -1.0)
 
-    def weighted_grid(self, board):
-        size = len(board)
-        # Default snake-like gradient for 4x4; fall back to a generic gradient otherwise.
-        default_weights = [
-            [65536, 32768, 16384, 8192],
-            [512, 256, 128, 64],
-            [16, 8, 4, 2],
-            [1, 1, 1, 1],
-        ]
+    def weighted_grid(self, log_board):
+        size = len(log_board)
+        weights = []
 
-        if size == 4:
-            weights = default_weights
-        else:
-            weights = []
-            base = 2 ** (size * size)
-            for r in range(size):
-                row = []
-                for c in range(size):
-                    idx = r * size + c if r % 2 == 0 else r * size + (size - 1 - c)
-                    row.append(base // (2 ** idx))
-                weights.append(row)
+        # Snake gradient with modest weights so it complements other heuristics
+        counter = size * size - 1
+        for r in range(size):
+            row = []
+            cols = range(size) if r % 2 == 0 else range(size - 1, -1, -1)
+            for _ in cols:
+                row.append(counter)
+                counter -= 1
+            weights.append(row if r % 2 == 0 else row[::-1])
 
-        score = 0
+        score = 0.0
         for r in range(size):
             for c in range(size):
-                score += weights[r][c] * board[r][c]
+                score += weights[r][c] * log_board[r][c]
         return score
 
     # ---------------------------------------------------------
