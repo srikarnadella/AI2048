@@ -16,6 +16,21 @@ from src.agents.expectimax_agent import ExpectimaxAgent
 
 #python3 play.py eval-expectimax --games 5 --depth 4 --time-limit 0.12
 #python3 play.py expectimax --gui --depth 4 --time-limit 0.12
+"""
+python play.py eval-expectimax --games 20 --depth 5 --time-limit 0.18 --seed 42 --report-end
+Agent: expectimax
+Games played: 20
+Average score: 26195.80
+Median score: 28452.00 (stdev 9648.89)
+Average max tile: 1715.20
+Win rate (>=2048): 70.0%
+Best tile reached: 2048
+Average move time: 131.1 ms
+Max tile distribution:
+  512: 1 game(s)
+  1024: 5 game(s)
+  2048: 14 game(s)
+"""
 def load_agent(name, depth=4, time_limit=0.08, debug=False):
     if name == "random":
         return RandomAgent()

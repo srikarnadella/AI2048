@@ -220,7 +220,8 @@ class Game2048GUI:
                 self.prepare_animations(before, after)
 
                 while not self.animate():
-                    pass
+                    # Avoid a busy spin while animations run.
+                    self.clock.tick(FPS)
 
                 self.prev_state = after
 

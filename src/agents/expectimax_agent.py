@@ -3,7 +3,12 @@
 import math
 import time
 import random
+import zlib
+from array import array
 from src.game_2048 import ACTIONS
+
+# Basic move ordering similar to the “working” reference: left/up first.
+ORDERED_ACTIONS = ["left", "up", "right", "down"]
 
 
 class ExpectimaxAgent:
@@ -30,7 +35,7 @@ class ExpectimaxAgent:
             depth_best_score = best_score
             depth_best_action = best_action
 
-            for action in ACTIONS:
+            for action in ORDERED_ACTIONS:
                 moved, reward, board_copy = env.simulate_action(action)
                 if not moved:
                     continue
@@ -76,7 +81,7 @@ class ExpectimaxAgent:
     def max_node(self, board, depth):
         max_score = -float("inf")
 
-        for action in ACTIONS:
+        for action in ORDERED_ACTIONS:
             if not self.can_move(board, action):
                 continue
             board_copy = self.copy_board(board)
@@ -114,7 +119,9 @@ class ExpectimaxAgent:
     # ---------------------------------------------------------
     def board_key(self, board):
         # Flattened tuple is smaller/faster to hash than tuple of tuples.
-        return tuple(cell for row in board for cell in row)
+        # CRC over 16-bit cell array keeps keys compact and hashing fast.
+        flat = array("H", (cell for row in board for cell in row))
+        return zlib.crc32(flat.tobytes())
 
     def copy_board(self, board):
         return [row[:] for row in board]
