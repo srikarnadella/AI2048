@@ -1,24 +1,34 @@
-# src/agents/expectimax_agent.py
-
 import math
 import time
-import random
 import zlib
 from array import array
 from src.game_2048 import ACTIONS
 
-# Basic move ordering similar to the “working” reference: left/up first.
-ORDERED_ACTIONS = ["left", "up", "right", "down"]
+# Fallback order (used if dynamic ordering ties or fails)
+FALLBACK_ACTIONS = ["left", "up", "right", "down"]
 
 
 class ExpectimaxAgent:
+    """
+    Expectimax agent with:
+      - iterative deepening up to self.depth
+      - strict per-move time budget
+      - depth-aware transposition caching (Tier 1.2)
+      - strong heuristic evaluation
+      - dynamic move ordering
+      - NEW: corner stability penalty
+      - NEW: late-game adaptive depth
+    """
+
     def __init__(self, depth=4, time_limit_seconds: float = 0.12, debug: bool = False):
         self.depth = depth
-        # Per-move soft time budget; stops search early with heuristic value
         self.time_limit_seconds = time_limit_seconds
         self._deadline = None
         self._cache = {}
         self.debug = debug
+
+        # Fixed target corner (top-left)
+        self.target_corner = (0, 0)
 
     # ---------------------------------------------------------
     # PUBLIC
@@ -30,16 +40,24 @@ class ExpectimaxAgent:
         best_score = -float("inf")
         best_action = None
 
-        # Iterative deepening: keep the best fully evaluated result before the deadline.
-        for depth_limit in range(1, self.depth + 1):
+        # -------- NEW: adaptive depth for late game --------
+        empty = self.empty_cells(env.board)
+        max_depth = self.depth + 1 if empty <= 4 else self.depth
+
+        # Iterative deepening
+        for depth_limit in range(1, max_depth + 1):
             depth_best_score = best_score
             depth_best_action = best_action
 
-            for action in ORDERED_ACTIONS:
+            ordered_actions = self.order_actions(env)
+
+            for action in ordered_actions:
                 moved, reward, board_copy = env.simulate_action(action)
                 if not moved:
                     continue
+
                 score = reward + self.expectimax(board_copy, depth_limit - 1, is_chance=True)
+
                 if score > depth_best_score:
                     depth_best_score = score
                     depth_best_action = action
@@ -57,41 +75,65 @@ class ExpectimaxAgent:
         return best_action
 
     # ---------------------------------------------------------
+    # Dynamic move ordering
+    # ---------------------------------------------------------
+    def order_actions(self, env):
+        scored = []
+        for action in ACTIONS:
+            moved, reward, board_copy = env.simulate_action(action)
+            if not moved:
+                continue
+            scored.append((reward + self.evaluate(board_copy), action))
+
+        if not scored:
+            return FALLBACK_ACTIONS
+
+        scored.sort(reverse=True, key=lambda x: x[0])
+        return [a for _, a in scored]
+
+    # ---------------------------------------------------------
     # EXPECTIMAX CORE
     # ---------------------------------------------------------
     def expectimax(self, board, depth, is_chance):
         if self._deadline and time.time() >= self._deadline:
             return self.evaluate(board)
 
-        key = (is_chance, depth, self.board_key(board))
+        key = (is_chance, self.board_key(board))
         if key in self._cache:
-            return self._cache[key]
+            cached_depth, cached_value = self._cache[key]
+            if cached_depth >= depth:
+                return cached_value
 
         if depth == 0 or self.is_terminal(board):
-            return self.evaluate(board)
+            val = self.evaluate(board)
+            self._cache[key] = (depth, val)
+            return val
 
         if is_chance:
             val = self.chance_node(board, depth)
         else:
             val = self.max_node(board, depth)
 
-        self._cache[key] = val
+        self._cache[key] = (depth, val)
         return val
 
     def max_node(self, board, depth):
         max_score = -float("inf")
 
-        for action in ORDERED_ACTIONS:
+        for action in FALLBACK_ACTIONS:
             if not self.can_move(board, action):
                 continue
+
             board_copy = self.copy_board(board)
             moved, reward = self.move_board(board_copy, action)
-
             if not moved:
                 continue
 
             score = reward + self.expectimax(board_copy, depth - 1, is_chance=True)
             max_score = max(max_score, score)
+
+            if self._deadline and time.time() >= self._deadline:
+                break
 
         return max_score if max_score != -float("inf") else self.evaluate(board)
 
@@ -103,6 +145,7 @@ class ExpectimaxAgent:
             return self.evaluate(board)
 
         total = 0.0
+
         for (r, c) in empty:
             board[r][c] = 2
             total += 0.9 * self.expectimax(board, depth - 1, is_chance=False)
@@ -112,14 +155,15 @@ class ExpectimaxAgent:
 
             board[r][c] = 0
 
+            if self._deadline and time.time() >= self._deadline:
+                return self.evaluate(board)
+
         return total / len(empty)
 
     # ---------------------------------------------------------
     # UTILITIES
     # ---------------------------------------------------------
     def board_key(self, board):
-        # Flattened tuple is smaller/faster to hash than tuple of tuples.
-        # CRC over 16-bit cell array keeps keys compact and hashing fast.
         flat = array("H", (cell for row in board for cell in row))
         return zlib.crc32(flat.tobytes())
 
@@ -133,17 +177,16 @@ class ExpectimaxAgent:
 
         if action == "left":
             for r in range(size):
-                original_line = board[r]
-                new_line, reward = self.compress_and_merge_line(original_line)
-                board[r] = new_line
-                if new_line != original_line:
+                new_line, reward = self.compress_and_merge_line(board[r])
+                if new_line != board[r]:
                     moved = True
+                board[r] = new_line
                 total_reward += reward
 
         elif action == "right":
             for r in range(size):
-                original_line = list(reversed(board[r]))
-                new_line, reward = self.compress_and_merge_line(original_line)
+                rev = list(reversed(board[r]))
+                new_line, reward = self.compress_and_merge_line(rev)
                 new_line = list(reversed(new_line))
                 if new_line != board[r]:
                     moved = True
@@ -152,8 +195,8 @@ class ExpectimaxAgent:
 
         elif action == "up":
             for c in range(size):
-                original_line = [board[r][c] for r in range(size)]
-                new_line, reward = self.compress_and_merge_line(original_line)
+                col = [board[r][c] for r in range(size)]
+                new_line, reward = self.compress_and_merge_line(col)
                 for r in range(size):
                     if board[r][c] != new_line[r]:
                         moved = True
@@ -162,8 +205,8 @@ class ExpectimaxAgent:
 
         elif action == "down":
             for c in range(size):
-                original_line = [board[r][c] for r in range(size - 1, -1, -1)]
-                new_line, reward = self.compress_and_merge_line(original_line)
+                col = [board[r][c] for r in range(size - 1, -1, -1)]
+                new_line, reward = self.compress_and_merge_line(col)
                 new_line = list(reversed(new_line))
                 for r in range(size):
                     if board[r][c] != new_line[r]:
@@ -171,20 +214,14 @@ class ExpectimaxAgent:
                     board[r][c] = new_line[r]
                 total_reward += reward
 
-        else:
-            raise ValueError(f"Unknown action: {action}")
-
         return moved, total_reward
 
     def is_terminal(self, board):
         size = len(board)
-        # If any empty cell exists, not terminal
         for r in range(size):
             for c in range(size):
                 if board[r][c] == 0:
                     return False
-
-        # Horizontal or vertical merge available?
         for r in range(size):
             for c in range(size - 1):
                 if board[r][c] == board[r][c + 1]:
@@ -193,49 +230,44 @@ class ExpectimaxAgent:
             for r in range(size - 1):
                 if board[r][c] == board[r + 1][c]:
                     return False
-
         return True
 
     def can_move(self, board, action):
         size = len(board)
         if action == "left":
             for r in range(size):
-                row = board[r]
                 for c in range(1, size):
-                    if row[c] and (row[c - 1] == 0 or row[c - 1] == row[c]):
+                    if board[r][c] and (board[r][c - 1] == 0 or board[r][c - 1] == board[r][c]):
                         return True
         elif action == "right":
             for r in range(size):
-                row = board[r]
                 for c in range(size - 2, -1, -1):
-                    if row[c] and (row[c + 1] == 0 or row[c + 1] == row[c]):
+                    if board[r][c] and (board[r][c + 1] == 0 or board[r][c + 1] == board[r][c]):
                         return True
         elif action == "up":
             for c in range(size):
                 for r in range(1, size):
-                    val = board[r][c]
-                    if val and (board[r - 1][c] == 0 or board[r - 1][c] == val):
+                    if board[r][c] and (board[r - 1][c] == 0 or board[r - 1][c] == board[r][c]):
                         return True
         elif action == "down":
             for c in range(size):
                 for r in range(size - 2, -1, -1):
-                    val = board[r][c]
-                    if val and (board[r + 1][c] == 0 or board[r + 1][c] == val):
+                    if board[r][c] and (board[r + 1][c] == 0 or board[r + 1][c] == board[r][c]):
                         return True
         return False
 
     # ---------------------------------------------------------
-    # EVALUATION — STRONG HEURISTICS
+    # EVALUATION — STABLE + CORNER STABILITY
     # ---------------------------------------------------------
     def evaluate(self, board):
         log_board = self.log_board(board)
         smooth_penalty = self.smoothness(log_board)
         monotonic_score = self.monotonicity(log_board)
         empty_bonus = self.empty_cells(board)
-        corner_bonus = self.corner_max(board, log_board)
+        corner_bonus = self.corner_max(board)
         gradient_bonus = self.weighted_grid(log_board)
 
-        return (
+        score = (
             3.0 * empty_bonus
             + 1.4 * corner_bonus
             + 0.65 * gradient_bonus
@@ -243,12 +275,20 @@ class ExpectimaxAgent:
             - 0.25 * smooth_penalty
         )
 
+        # -------- NEW: corner stability penalty --------
+        max_tile = max(max(row) for row in board)
+        if max_tile > 0:
+            r, c = self.target_corner
+            if board[r][c] != max_tile:
+                score -= 4.0 * math.log2(max_tile)
+
+        return score
+
     def log_board(self, board):
         return [[0 if v == 0 else int(math.log2(v)) for v in row] for row in board]
 
     def empty_cells(self, board):
-        size = len(board)
-        return sum(board[r][c] == 0 for r in range(size) for c in range(size))
+        return sum(cell == 0 for row in board for cell in row)
 
     def smoothness(self, log_board):
         size = len(log_board)
@@ -267,55 +307,48 @@ class ExpectimaxAgent:
         size = len(log_board)
         totals = [0.0, 0.0, 0.0, 0.0]
 
-        # rows
         for r in range(size):
             for c in range(size - 1):
                 if log_board[r][c] and log_board[r][c + 1]:
-                    x, y = log_board[r][c], log_board[r][c + 1]
-                    if x > y:
-                        totals[0] -= x - y
+                    diff = log_board[r][c] - log_board[r][c + 1]
+                    if diff > 0:
+                        totals[0] -= diff
                     else:
-                        totals[1] -= y - x
+                        totals[1] += diff
 
-        # columns
         for c in range(size):
             for r in range(size - 1):
                 if log_board[r][c] and log_board[r + 1][c]:
-                    x, y = log_board[r][c], log_board[r + 1][c]
-                    if x > y:
-                        totals[2] -= x - y
+                    diff = log_board[r][c] - log_board[r + 1][c]
+                    if diff > 0:
+                        totals[2] -= diff
                     else:
-                        totals[3] -= y - x
+                        totals[3] += diff
 
         return max(totals[0], totals[1]) + max(totals[2], totals[3])
 
-    def corner_max(self, board, log_board):
+    def corner_max(self, board):
         max_tile = max(max(row) for row in board)
         if max_tile == 0:
             return 0
         max_log = int(math.log2(max_tile))
         size = len(board)
         corners = [
-            board[0][0],
-            board[0][size - 1],
-            board[size - 1][0],
-            board[size - 1][size - 1],
+            board[0][0], board[0][size - 1],
+            board[size - 1][0], board[size - 1][size - 1],
         ]
         return max_log * (2.0 if max_tile in corners else -1.0)
 
     def weighted_grid(self, log_board):
         size = len(log_board)
         weights = []
-
-        # Snake gradient with modest weights so it complements other heuristics
-        counter = size * size - 1
+        w = size * size
         for r in range(size):
             row = []
-            cols = range(size) if r % 2 == 0 else range(size - 1, -1, -1)
-            for _ in cols:
-                row.append(counter)
-                counter -= 1
-            weights.append(row if r % 2 == 0 else row[::-1])
+            for _ in range(size):
+                row.append(w)
+                w -= 1
+            weights.append(row)
 
         score = 0.0
         for r in range(size):
@@ -324,7 +357,7 @@ class ExpectimaxAgent:
         return score
 
     # ---------------------------------------------------------
-    # LOW-LEVEL MOVE (shared with env logic)
+    # LOW-LEVEL MOVE
     # ---------------------------------------------------------
     def compress_and_merge_line(self, line):
         size = len(line)
@@ -332,22 +365,19 @@ class ExpectimaxAgent:
 
         merged = []
         reward = 0
-        skip_next = False
+        skip = False
 
         for i in range(len(compressed)):
-            if skip_next:
-                skip_next = False
+            if skip:
+                skip = False
                 continue
-
             if i + 1 < len(compressed) and compressed[i] == compressed[i + 1]:
-                new_value = compressed[i] * 2
-                merged.append(new_value)
-                reward += new_value
-                skip_next = True
+                new_val = compressed[i] * 2
+                merged.append(new_val)
+                reward += new_val
+                skip = True
             else:
                 merged.append(compressed[i])
-
-        merged = [v for v in merged if v != 0]
 
         while len(merged) < size:
             merged.append(0)

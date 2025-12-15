@@ -12,6 +12,7 @@ except Exception:
 
 from src.agents.random_agent import RandomAgent
 from src.agents.greedy_agent import GreedyAgent
+from src.agents.minimax_agent import MinimaxAgent
 from src.agents.expectimax_agent import ExpectimaxAgent
 
 #python3 play.py eval-expectimax --games 5 --depth 4 --time-limit 0.12
@@ -36,6 +37,8 @@ def load_agent(name, depth=4, time_limit=0.08, debug=False):
         return RandomAgent()
     elif name == "greedy":
         return GreedyAgent()
+    elif name == "minimax":
+        return MinimaxAgent(depth=depth, time_limit_seconds=time_limit, debug=debug)
     elif name == "expectimax":
         return ExpectimaxAgent(depth=depth, time_limit_seconds=time_limit, debug=debug)
     else:
